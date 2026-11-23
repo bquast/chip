@@ -130,7 +130,7 @@
   </div>
 
   <div id="readout"></div>
-  <div id="hint">Drag to orbit · Scroll to zoom · Click 3D switches (or aim + trigger in VR)</div>
+  <div id="hint">Desktop: Drag to orbit · VR: Left stick = move/zoom · Right stick = spin/height · Trigger = click</div>
 </div>
 
 <script type="module">
@@ -147,7 +147,8 @@ const state = {
   inB: 0,
   bitsA: [1, 0, 1, 0], // LSB -> MSB (5)
   bitsB: [1, 1, 0, 0], // LSB -> MSB (3)
-  inVR: false
+  inVR: false,
+  vrCalibrated: false
 };
 
 // --- SCENE SETUP ---
@@ -182,12 +183,12 @@ const floorGrid = new THREE.GridHelper(24, 48, 0x1e293b, 0x111827);
 floorGrid.position.y = -0.01;
 scene.add(floorGrid);
 
-// Rig group holds the workbench so we can scale/position cleanly for VR tabletop
+// Rig group holds the workbench so we can scale/position/rotate cleanly in VR
 const rigGroup = new THREE.Group();
 scene.add(rigGroup);
 
 const bench = new THREE.Mesh(
-  new THREE.BoxGeometry(8.6, 0.16, 5.2),
+  new THREE.BoxGeometry(9.2, 0.16, 5.4),
   new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.8, metalness: 0.2 })
 );
 bench.position.y = -0.08;
@@ -339,15 +340,25 @@ const drawBoardDisplay = (title, line1, line2) => {
   displayTexture.needsUpdate = true;
 };
 
-// --- 3D WORKBENCH LEVEL TABS (FOR VR & CLICKING) ---
+// --- 3D WORKBENCH LEVEL TABS + EXPLODE TOGGLE (FOR VR & CLICKING) ---
 const vrTabCaps = [];
+let explodeSwitch = null;
+
 const buildVrTabs = () => {
   const names = ['1.MOSFET', '2.NAND', '3.ADDER', '4.ALU'];
   names.forEach((name, idx) => {
-    const x = -2.7 + idx * 1.8;
-    const sw = addSwitch3D(vrTabsGroup, [x, 0, 2.25], name, () => setLevel(idx), 1.35);
+    const x = -3.2 + idx * 1.55;
+    const sw = addSwitch3D(vrTabsGroup, [x, 0, 2.3], name, () => setLevel(idx), 1.3);
     vrTabCaps.push(sw.cap);
   });
+
+  explodeSwitch = addSwitch3D(vrTabsGroup, [3.2, 0, 2.3], 'EXPLODE', () => {
+    state.explode = state.explode > 0.5 ? 0.0 : 1.0;
+    const sl = document.getElementById('explode-slider');
+    if (sl) sl.value = state.explode;
+    document.getElementById('explode-val').textContent = `${Math.round(state.explode * 100)}%`;
+    syncVrTabColors();
+  }, 1.3);
 };
 
 const syncVrTabColors = () => {
@@ -356,36 +367,36 @@ const syncVrTabColors = () => {
     cap.material.color.setHex(active ? 0x0ea5e9 : 0x334155);
     cap.material.emissiveIntensity = active ? 0.8 : 0.0;
   });
+  if (explodeSwitch) {
+    const ex = state.explode > 0.5;
+    explodeSwitch.cap.material.color.setHex(ex ? 0xf59e0b : 0x334155);
+    explodeSwitch.cap.material.emissive.setHex(0xf59e0b);
+    explodeSwitch.cap.material.emissiveIntensity = ex ? 0.8 : 0.0;
+  }
 };
 
 // --- LEVEL 0: NMOS TRANSISTOR ---
 const buildTransistor = () => {
-  // P-type Silicon Substrate
   addBox(stageGroup, 5.2, 0.7, 2.6, 0x334155, [0, 0.35, 0], { explodeY: 0 });
   const pLbl = makeLabelSprite('P-Type Silicon', 0.75);
   pLbl.position.set(0, 0.35, 1.55);
   stageGroup.add(pLbl);
 
-  // N+ Source & Drain wells
   addBox(stageGroup, 1.25, 0.36, 2.0, 0x2563eb, [-1.55, 0.56, 0], { explodeY: 0.35 });
   addBox(stageGroup, 1.25, 0.36, 2.0, 0x2563eb, [1.55, 0.56, 0], { explodeY: 0.35 });
 
-  // Inversion Channel (glows when Vgate >= Vth)
   const channel = addBox(stageGroup, 1.95, 0.14, 1.85, 0x22d3ee, [0, 0.68, 0], {
     transparent: true, opacity: 0.08, emissive: 0x22d3ee, emissiveIntensity: 0, explodeY: 0.55
   });
 
-  // SiO2 Insulating Oxide
   addBox(stageGroup, 2.1, 0.14, 2.1, 0x94a3b8, [0, 0.82, 0], {
     transparent: true, opacity: 0.45, roughness: 0.15, explodeY: 1.0
   });
 
-  // Polysilicon Gate
   const gate = addBox(stageGroup, 1.8, 0.34, 2.0, 0xd97706, [0, 1.08, 0], {
     metalness: 0.7, roughness: 0.25, emissive: 0xf59e0b, emissiveIntensity: 0, explodeY: 1.55
   });
 
-  // Metal Contacts (Source, Gate, Drain)
   addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [-1.55, 1.0, 0], { metalness: 0.85, explodeY: 1.95 });
   addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [0, 1.5, 0], { metalness: 0.85, explodeY: 2.15 });
   addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [1.55, 1.0, 0], { metalness: 0.85, explodeY: 1.95 });
@@ -394,7 +405,6 @@ const buildTransistor = () => {
   const gLbl = makeLabelSprite('GATE (V_in)', 0.65);  gLbl.position.set(0, 2.15, 0);     stageGroup.add(gLbl);
   const dLbl = makeLabelSprite('DRAIN (V_dd)', 0.65); dLbl.position.set(1.55, 1.65, 0);  stageGroup.add(dLbl);
 
-  // 3D Voltage step button on bench for VR
   const vSwitch = addSwitch3D(stageGroup, [-2.8, 0, 1.1], 'PULSE GATE', () => {
     state.gateV = state.gateV >= 1.8 ? 0.0 : 5.0;
     const sl = document.getElementById('gate-v-slider');
@@ -409,16 +419,13 @@ const buildTransistor = () => {
 
 // --- LEVEL 1: CMOS NAND GATE ---
 const buildNand = () => {
-  // Power rails: VDD (top) & GND (bottom)
   addWire(stageGroup, [-2.2, 2.4, -0.4], [2.2, 2.4, -0.4], 0.06, 0xef4444);
   addWire(stageGroup, [-2.2, 0.2, -0.4], [2.2, 0.2, -0.4], 0.06, 0x475569);
   const vddL = makeLabelSprite('VDD (1)', 0.55); vddL.position.set(-2.6, 2.4, -0.4); stageGroup.add(vddL);
   const gndL = makeLabelSprite('GND (0)', 0.55); gndL.position.set(-2.6, 0.2, -0.4); stageGroup.add(gndL);
 
-  // 2 PMOS in parallel (top)
   const pmosA = addBox(stageGroup, 0.8, 0.45, 0.45, 0x7c3aed, [-0.9, 1.85, -0.4], { emissive: 0xa855f7, explodeY: 0.7 });
   const pmosB = addBox(stageGroup, 0.8, 0.45, 0.45, 0x7c3aed, [0.9, 1.85, -0.4],  { emissive: 0xa855f7, explodeY: 0.7 });
-  // 2 NMOS in series (bottom)
   const nmosA = addBox(stageGroup, 0.8, 0.45, 0.45, 0x2563eb, [0, 1.0, -0.4],  { emissive: 0x38bdf8, explodeY: 0.35 });
   const nmosB = addBox(stageGroup, 0.8, 0.45, 0.45, 0x2563eb, [0, 0.48, -0.4], { emissive: 0x38bdf8, explodeY: 0.1 });
 
@@ -427,7 +434,6 @@ const buildNand = () => {
   const nAL = makeLabelSprite('NMOS A', 0.45); nAL.position.set(0.85, 1.0, 0.1);  stageGroup.add(nAL);
   const nBL = makeLabelSprite('NMOS B', 0.45); nBL.position.set(0.85, 0.48, 0.1); stageGroup.add(nBL);
 
-  // Interconnects
   addWire(stageGroup, [-0.9, 2.4, -0.4], [-0.9, 2.08, -0.4], 0.04, 0xef4444);
   addWire(stageGroup, [0.9, 2.4, -0.4],  [0.9, 2.08, -0.4],  0.04, 0xef4444);
   const wirePA = addWire(stageGroup, [-0.9, 1.62, -0.4], [0, 1.4, -0.4]);
@@ -435,7 +441,6 @@ const buildNand = () => {
   const wireN  = addWire(stageGroup, [0, 1.4, -0.4],     [0, 0.2, -0.4]);
   const wireY  = addWire(stageGroup, [0, 1.4, -0.4],     [2.3, 1.4, -0.4], 0.06);
 
-  // Output LED dome
   const outLed = new THREE.Mesh(
     new THREE.SphereGeometry(0.3, 20, 20),
     makeMat(0x22d3ee, { emissive: 0x22d3ee, emissiveIntensity: 0.9 })
@@ -444,7 +449,6 @@ const buildNand = () => {
   stageGroup.add(outLed);
   const yLbl = makeLabelSprite('OUT Y', 0.55); yLbl.position.set(2.55, 1.9, -0.4); stageGroup.add(yLbl);
 
-  // 3D Input switches
   const swA = addSwitch3D(stageGroup, [-2.4, 0, 1.0], 'INPUT A', () => { state.inA ^= 1; updateSimulation(); });
   const swB = addSwitch3D(stageGroup, [-1.2, 0, 1.0], 'INPUT B', () => { state.inB ^= 1; updateSimulation(); });
 
@@ -457,17 +461,14 @@ const buildNand = () => {
 
 // --- LEVEL 2: HALF ADDER ---
 const buildHalfAdder = () => {
-  // Input switches
   const swA = addSwitch3D(stageGroup, [-2.8, 0, -0.6], 'BIT A', () => { state.inA ^= 1; updateSimulation(); });
   const swB = addSwitch3D(stageGroup, [-2.8, 0,  0.8], 'BIT B', () => { state.inB ^= 1; updateSimulation(); });
 
-  // Gate blocks
   const xorGate = addBox(stageGroup, 1.4, 0.7, 1.1, 0x1e293b, [0, 0.55, -0.6], { emissive: 0x38bdf8, explodeY: 0.5 });
   const andGate = addBox(stageGroup, 1.4, 0.7, 1.1, 0x1e293b, [0, 0.55,  0.9], { emissive: 0xa855f7, explodeY: 0.25 });
   const xL = makeLabelSprite('XOR (SUM)', 0.6);   xL.position.set(0, 1.25, -0.6); stageGroup.add(xL);
   const aL = makeLabelSprite('AND (CARRY)', 0.6); aL.position.set(0, 1.25,  0.9); stageGroup.add(aL);
 
-  // Buses
   const wA1 = addWire(stageGroup, [-2.4, 0.25, -0.6], [-0.7, 0.55, -0.75]);
   const wA2 = addWire(stageGroup, [-1.5, 0.4,  -0.67], [-0.7, 0.55,  0.75]);
   const wB1 = addWire(stageGroup, [-2.4, 0.25,  0.8], [-0.7, 0.55,  1.05]);
@@ -475,7 +476,6 @@ const buildHalfAdder = () => {
   const wSum   = addWire(stageGroup, [0.7, 0.55, -0.6], [2.4, 0.55, -0.6], 0.06);
   const wCarry = addWire(stageGroup, [0.7, 0.55,  0.9], [2.4, 0.55,  0.9], 0.06);
 
-  // Output LEDs
   const sumLed = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 20), makeMat(0x22d3ee, { emissive: 0x22d3ee }));
   sumLed.position.set(2.65, 0.55, -0.6); stageGroup.add(sumLed);
   const carryLed = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 20), makeMat(0xa855f7, { emissive: 0xa855f7 }));
@@ -495,7 +495,6 @@ const buildHalfAdder = () => {
 const buildAlu = () => {
   const slices = [];
   for (let i = 0; i < 4; i++) {
-    // Bit 0 (LSB) on right (+2.4), Bit 3 (MSB) on left (-2.4)
     const x = 2.4 - i * 1.6;
     const swA = addSwitch3D(stageGroup, [x - 0.36, 0, 1.2], `A${i}`, () => { state.bitsA[i] ^= 1; updateSimulation(); }, 0.58);
     const swB = addSwitch3D(stageGroup, [x + 0.36, 0, 1.2], `B${i}`, () => { state.bitsB[i] ^= 1; updateSimulation(); }, 0.58);
@@ -518,7 +517,6 @@ const buildAlu = () => {
     slices.push({ swA, swB, faBlock, sumLed, wOut, carryWire, carryParticles });
   }
 
-  // Carry-out overflow LED on far left
   const coutLed = new THREE.Mesh(new THREE.SphereGeometry(0.26, 18, 18), makeMat(0xf59e0b, { emissive: 0xf59e0b }));
   coutLed.position.set(-3.7, 0.5, -1.3); stageGroup.add(coutLed);
   const cLbl = makeLabelSprite('C_OUT', 0.45); cLbl.position.set(-3.7, 0.98, -1.3); stageGroup.add(cLbl);
@@ -705,9 +703,8 @@ const setLevel = (lvl) => {
     b.classList.toggle('active', parseInt(b.dataset.level, 10) === lvl);
   });
 
-  // Clear previous stage
   while (stageGroup.children.length) stageGroup.remove(stageGroup.children[0]);
-  clickables = [...vrTabCaps];
+  clickables = [...vrTabCaps, ...(explodeSwitch ? [explodeSwitch.cap] : [])];
   explodeItems = [];
   particles = [];
   refs = {};
@@ -736,7 +733,7 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   }
 });
 
-// --- WEBXR CONTROLLERS & TABLETOP SCALING ---
+// --- WEBXR CONTROLLERS, AUTO-HEIGHT & THUMBSTICK NAVIGATION ---
 const tempMatrix = new THREE.Matrix4();
 const setupVrController = (index) => {
   const ctrl = renderer.xr.getController(index);
@@ -760,17 +757,38 @@ const setupVrController = (index) => {
 setupVrController(0);
 setupVrController(1);
 
+const handleVrThumbsticks = (dt) => {
+  const session = renderer.xr.getSession();
+  if (!session) return;
+  for (const src of session.inputSources) {
+    if (!src.gamepad || src.gamepad.axes.length < 4) continue;
+    const x = Math.abs(src.gamepad.axes[2]) > 0.15 ? src.gamepad.axes[2] : 0;
+    const y = Math.abs(src.gamepad.axes[3]) > 0.15 ? src.gamepad.axes[3] : 0;
+    if (src.handedness === 'left') {
+      // Pan left/right & zoom closer/further
+      rigGroup.position.x -= x * dt * 1.2;
+      rigGroup.position.z -= y * dt * 1.2;
+    } else if (src.handedness === 'right') {
+      // Spin workbench (orbit) & raise/lower height
+      rigGroup.rotation.y += x * dt * 1.6;
+      rigGroup.position.y -= y * dt * 0.8;
+    }
+  }
+};
+
 renderer.xr.addEventListener('sessionstart', () => {
   state.inVR = true;
+  state.vrCalibrated = false;
   document.getElementById('hud').style.display = 'none';
-  rigGroup.position.set(0, 0.95, -1.15);
-  rigGroup.scale.setScalar(0.32);
+  rigGroup.scale.setScalar(0.26);
+  rigGroup.rotation.set(0, 0, 0);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
   state.inVR = false;
   document.getElementById('hud').style.display = 'block';
   rigGroup.position.set(0, 0, 0);
+  rigGroup.rotation.set(0, 0, 0);
   rigGroup.scale.setScalar(1);
 });
 
@@ -782,6 +800,7 @@ document.querySelectorAll('#level-tabs button').forEach(btn => {
 document.getElementById('explode-slider').addEventListener('input', (e) => {
   state.explode = parseFloat(e.target.value);
   document.getElementById('explode-val').textContent = `${Math.round(state.explode * 100)}%`;
+  syncVrTabColors();
 });
 
 window.addEventListener('resize', () => {
@@ -799,6 +818,19 @@ renderer.setAnimationLoop((now) => {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
+  // Snap workbench to comfortable desk height on the first VR frame
+  if (state.inVR && !state.vrCalibrated) {
+    const xrCam = renderer.xr.getCamera();
+    rigGroup.position.set(xrCam.position.x, xrCam.position.y - 0.35, xrCam.position.z - 1.15);
+    state.vrCalibrated = true;
+  }
+
+  if (state.inVR) {
+    handleVrThumbsticks(dt);
+  } else {
+    controls.update();
+  }
+
   // Smooth exploded-view interpolation
   for (const item of explodeItems) {
     const targetY = item.baseY + item.offsetY * state.explode;
@@ -815,7 +847,6 @@ renderer.setAnimationLoop((now) => {
     }
   }
 
-  if (!state.inVR) controls.update();
   renderer.render(scene, camera);
 });
 
