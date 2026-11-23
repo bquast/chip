@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Silicon Lab — Transistor to ALU (WebXR)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0b0f17;
+    color: #e2e8f0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    overflow: hidden;
+    user-select: none;
+  }
+  #hud {
+    position: fixed;
+    top: 16px;
+    left: 16px;
+    width: 310px;
+    background: rgba(15, 23, 42, 0.86);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 10px;
+    padding: 14px;
+    backdrop-filter: blur(10px);
+    z-index: 10;
+  }
+  h1 {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #38bdf8;
+    margin-bottom: 10px;
+  }
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  button {
+    background: #1e293b;
+    color: #cbd5e1;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 7px 8px;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  button:hover { border-color: #38bdf8; color: #f8fafc; }
+  button.active {
+    background: rgba(56, 189, 248, 0.18);
+    border-color: #38bdf8;
+    color: #38bdf8;
+  }
+  .row {
+    margin-bottom: 10px;
+  }
+  label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #94a3b8;
+    margin-bottom: 4px;
+  }
+  input[type="range"] {
+    width: 100%;
+    accent-color: #38bdf8;
+    cursor: pointer;
+  }
+  .controls-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .bit-btn {
+    flex: 1;
+    min-width: 44px;
+    text-align: center;
+  }
+  .bit-btn.on {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: #22d3ee;
+    color: #22d3ee;
+  }
+  #readout {
+    background: #090d16;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 9px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #cbd5e1;
+  }
+  #readout strong { color: #38bdf8; }
+  #hint {
+    margin-top: 8px;
+    font-size: 10px;
+    color: #64748b;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="hud">
+  <h1>Silicon Lab // 3D + WebXR</h1>
+  <div class="tabs" id="level-tabs">
+    <button data-level="0" class="active">1. Transistor</button>
+    <button data-level="1">2. CMOS NAND</button>
+    <button data-level="2">3. Half Adder</button>
+    <button data-level="3">4. 4-Bit ALU</button>
+  </div>
+
+  <div id="dynamic-controls"></div>
+
+  <div class="row">
+    <label><span>Explode Layers</span><span id="explode-val">0%</span></label>
+    <input id="explode-slider" type="range" min="0" max="1" step="0.01" value="0" />
+  </div>
+
+  <div id="readout"></div>
+  <div id="hint">Drag to orbit · Scroll to zoom · Click 3D switches (or aim + trigger in VR)</div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+
+// --- STATE ---
+const state = {
+  level: 0,
+  gateV: 0.0,
+  explode: 0.0,
+  inA: 0,
+  inB: 0,
+  bitsA: [1, 0, 1, 0], // LSB -> MSB (5)
+  bitsB: [1, 1, 0, 0], // LSB -> MSB (3)
+  inVR: false
+};
+
+// --- SCENE SETUP ---
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0f17);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(0, 4.6, 7.2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+document.body.appendChild(VRButton.createButton(renderer));
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.target.set(0, 0.6, 0);
+
+// Lights
+scene.add(new THREE.AmbientLight(0xcbd5e1, 0.7));
+const keyLight = new THREE.DirectionalLight(0xffffff, 1.4);
+keyLight.position.set(5, 9, 6);
+scene.add(keyLight);
+const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.6);
+rimLight.position.set(-6, 4, -5);
+scene.add(rimLight);
+
+// Floor grid (spatial anchor for VR & desktop)
+const floorGrid = new THREE.GridHelper(24, 48, 0x1e293b, 0x111827);
+floorGrid.position.y = -0.01;
+scene.add(floorGrid);
+
+// Rig group holds the workbench so we can scale/position cleanly for VR tabletop
+const rigGroup = new THREE.Group();
+scene.add(rigGroup);
+
+const bench = new THREE.Mesh(
+  new THREE.BoxGeometry(8.6, 0.16, 5.2),
+  new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.8, metalness: 0.2 })
+);
+bench.position.y = -0.08;
+rigGroup.add(bench);
+
+const stageGroup = new THREE.Group();
+rigGroup.add(stageGroup);
+
+const vrTabsGroup = new THREE.Group();
+rigGroup.add(vrTabsGroup);
+
+// Runtime registries rebuilt per stage
+let clickables = [];
+let explodeItems = [];
+let particles = [];
+let refs = {};
+let displayCanvasCtx = null;
+let displayTexture = null;
+
+// --- PURE GEOMETRY HELPERS ---
+const makeMat = (color, opts = {}) => new THREE.MeshStandardMaterial({
+  color,
+  roughness: opts.roughness ?? 0.45,
+  metalness: opts.metalness ?? 0.25,
+  transparent: opts.transparent ?? false,
+  opacity: opts.opacity ?? 1,
+  emissive: opts.emissive ?? 0x000000,
+  emissiveIntensity: opts.emissiveIntensity ?? 0
+});
+
+const addBox = (parent, w, h, d, color, pos, opts = {}) => {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), makeMat(color, opts));
+  mesh.position.set(pos[0], pos[1], pos[2]);
+  parent.add(mesh);
+  if (opts.explodeY !== undefined) {
+    explodeItems.push({ obj: mesh, baseY: pos[1], offsetY: opts.explodeY });
+  }
+  return mesh;
+};
+
+const addCyl = (parent, r, h, color, pos, opts = {}) => {
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, 24), makeMat(color, opts));
+  mesh.position.set(pos[0], pos[1], pos[2]);
+  parent.add(mesh);
+  if (opts.explodeY !== undefined) {
+    explodeItems.push({ obj: mesh, baseY: pos[1], offsetY: opts.explodeY });
+  }
+  return mesh;
+};
+
+const addWire = (parent, a, b, radius = 0.045, color = 0x334155) => {
+  const va = new THREE.Vector3(...a);
+  const vb = new THREE.Vector3(...b);
+  const dist = va.distanceTo(vb);
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius, radius, dist, 10),
+    makeMat(color, { roughness: 0.3, metalness: 0.6 })
+  );
+  mesh.position.copy(va).add(vb).multiplyScalar(0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vb.clone().sub(va).normalize());
+  parent.add(mesh);
+  return mesh;
+};
+
+const makeLabelSprite = (text, scale = 1.0, bg = 'rgba(15,23,42,0.85)', fg = '#e2e8f0') => {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.strokeStyle = 'rgba(56,189,248,0.45)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(4, 4, c.width - 8, c.height - 8);
+  ctx.fillStyle = fg;
+  ctx.font = 'bold 46px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, c.width / 2, c.height / 2);
+  const tex = new THREE.CanvasTexture(c);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  sprite.scale.set(1.6 * scale, 0.4 * scale, 1);
+  return sprite;
+};
+
+const addSwitch3D = (parent, pos, labelText, onToggle, width = 0.72) => {
+  const group = new THREE.Group();
+  group.position.set(pos[0], pos[1], pos[2]);
+  parent.add(group);
+
+  const base = addBox(group, width, 0.14, 0.56, 0x1e293b, [0, 0.07, 0]);
+  const cap = addBox(group, width * 0.72, 0.16, 0.36, 0x334155, [0, 0.2, 0], { emissive: 0x0ea5e9, emissiveIntensity: 0 });
+  cap.userData.onToggle = onToggle;
+  base.userData.onToggle = onToggle;
+  clickables.push(cap, base);
+
+  const lbl = makeLabelSprite(labelText, 0.52);
+  lbl.position.set(0, 0.55, 0);
+  group.add(lbl);
+
+  return { group, cap };
+};
+
+const spawnParticles = (parent, count, pathPoints, color = 0x38bdf8) => {
+  const group = [];
+  const geo = new THREE.SphereGeometry(0.055, 10, 10);
+  const mat = new THREE.MeshBasicMaterial({ color });
+  for (let i = 0; i < count; i++) {
+    const m = new THREE.Mesh(geo, mat);
+    parent.add(m);
+    const p = { mesh: m, path: pathPoints, t: i / count, speed: 0 };
+    particles.push(p);
+    group.push(p);
+  }
+  return group;
+};
+
+const makeBoardDisplay = (parent, pos) => {
+  const c = document.createElement('canvas');
+  c.width = 1024;
+  c.height = 256;
+  displayCanvasCtx = c.getContext('2d');
+  displayTexture = new THREE.CanvasTexture(c);
+  const panel = new THREE.Mesh(
+    new THREE.PlaneGeometry(5.6, 1.4),
+    new THREE.MeshBasicMaterial({ map: displayTexture })
+  );
+  panel.position.set(pos[0], pos[1], pos[2]);
+  parent.add(panel);
+};
+
+const drawBoardDisplay = (title, line1, line2) => {
+  if (!displayCanvasCtx || !displayTexture) return;
+  const ctx = displayCanvasCtx;
+  ctx.fillStyle = '#090d16';
+  ctx.fillRect(0, 0, 1024, 256);
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 6;
+  ctx.strokeRect(6, 6, 1012, 244);
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 34px monospace';
+  ctx.fillText(title, 36, 60);
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 46px monospace';
+  ctx.fillText(line1, 36, 138);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '32px monospace';
+  ctx.fillText(line2, 36, 206);
+  displayTexture.needsUpdate = true;
+};
+
+// --- 3D WORKBENCH LEVEL TABS (FOR VR & CLICKING) ---
+const vrTabCaps = [];
+const buildVrTabs = () => {
+  const names = ['1.MOSFET', '2.NAND', '3.ADDER', '4.ALU'];
+  names.forEach((name, idx) => {
+    const x = -2.7 + idx * 1.8;
+    const sw = addSwitch3D(vrTabsGroup, [x, 0, 2.25], name, () => setLevel(idx), 1.35);
+    vrTabCaps.push(sw.cap);
+  });
+};
+
+const syncVrTabColors = () => {
+  vrTabCaps.forEach((cap, i) => {
+    const active = i === state.level;
+    cap.material.color.setHex(active ? 0x0ea5e9 : 0x334155);
+    cap.material.emissiveIntensity = active ? 0.8 : 0.0;
+  });
+};
+
+// --- LEVEL 0: NMOS TRANSISTOR ---
+const buildTransistor = () => {
+  // P-type Silicon Substrate
+  addBox(stageGroup, 5.2, 0.7, 2.6, 0x334155, [0, 0.35, 0], { explodeY: 0 });
+  const pLbl = makeLabelSprite('P-Type Silicon', 0.75);
+  pLbl.position.set(0, 0.35, 1.55);
+  stageGroup.add(pLbl);
+
+  // N+ Source & Drain wells
+  addBox(stageGroup, 1.25, 0.36, 2.0, 0x2563eb, [-1.55, 0.56, 0], { explodeY: 0.35 });
+  addBox(stageGroup, 1.25, 0.36, 2.0, 0x2563eb, [1.55, 0.56, 0], { explodeY: 0.35 });
+
+  // Inversion Channel (glows when Vgate >= Vth)
+  const channel = addBox(stageGroup, 1.95, 0.14, 1.85, 0x22d3ee, [0, 0.68, 0], {
+    transparent: true, opacity: 0.08, emissive: 0x22d3ee, emissiveIntensity: 0, explodeY: 0.55
+  });
+
+  // SiO2 Insulating Oxide
+  addBox(stageGroup, 2.1, 0.14, 2.1, 0x94a3b8, [0, 0.82, 0], {
+    transparent: true, opacity: 0.45, roughness: 0.15, explodeY: 1.0
+  });
+
+  // Polysilicon Gate
+  const gate = addBox(stageGroup, 1.8, 0.34, 2.0, 0xd97706, [0, 1.08, 0], {
+    metalness: 0.7, roughness: 0.25, emissive: 0xf59e0b, emissiveIntensity: 0, explodeY: 1.55
+  });
+
+  // Metal Contacts (Source, Gate, Drain)
+  addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [-1.55, 1.0, 0], { metalness: 0.85, explodeY: 1.95 });
+  addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [0, 1.5, 0], { metalness: 0.85, explodeY: 2.15 });
+  addCyl(stageGroup, 0.22, 0.55, 0xcbd5e1, [1.55, 1.0, 0], { metalness: 0.85, explodeY: 1.95 });
+
+  const sLbl = makeLabelSprite('SOURCE (GND)', 0.65); sLbl.position.set(-1.55, 1.65, 0); stageGroup.add(sLbl);
+  const gLbl = makeLabelSprite('GATE (V_in)', 0.65);  gLbl.position.set(0, 2.15, 0);     stageGroup.add(gLbl);
+  const dLbl = makeLabelSprite('DRAIN (V_dd)', 0.65); dLbl.position.set(1.55, 1.65, 0);  stageGroup.add(dLbl);
+
+  // 3D Voltage step button on bench for VR
+  const vSwitch = addSwitch3D(stageGroup, [-2.8, 0, 1.1], 'PULSE GATE', () => {
+    state.gateV = state.gateV >= 1.8 ? 0.0 : 5.0;
+    const sl = document.getElementById('gate-v-slider');
+    if (sl) sl.value = state.gateV;
+    updateSimulation();
+  }, 1.15);
+
+  const electrons = spawnParticles(stageGroup, 14, [[-1.55, 0.7, 0], [1.55, 0.7, 0]], 0x38bdf8);
+  makeBoardDisplay(stageGroup, [0, 2.85, -1.9]);
+  refs = { channel, gate, vSwitch, electrons };
+};
+
+// --- LEVEL 1: CMOS NAND GATE ---
+const buildNand = () => {
+  // Power rails: VDD (top) & GND (bottom)
+  addWire(stageGroup, [-2.2, 2.4, -0.4], [2.2, 2.4, -0.4], 0.06, 0xef4444);
+  addWire(stageGroup, [-2.2, 0.2, -0.4], [2.2, 0.2, -0.4], 0.06, 0x475569);
+  const vddL = makeLabelSprite('VDD (1)', 0.55); vddL.position.set(-2.6, 2.4, -0.4); stageGroup.add(vddL);
+  const gndL = makeLabelSprite('GND (0)', 0.55); gndL.position.set(-2.6, 0.2, -0.4); stageGroup.add(gndL);
+
+  // 2 PMOS in parallel (top)
+  const pmosA = addBox(stageGroup, 0.8, 0.45, 0.45, 0x7c3aed, [-0.9, 1.85, -0.4], { emissive: 0xa855f7, explodeY: 0.7 });
+  const pmosB = addBox(stageGroup, 0.8, 0.45, 0.45, 0x7c3aed, [0.9, 1.85, -0.4],  { emissive: 0xa855f7, explodeY: 0.7 });
+  // 2 NMOS in series (bottom)
+  const nmosA = addBox(stageGroup, 0.8, 0.45, 0.45, 0x2563eb, [0, 1.0, -0.4],  { emissive: 0x38bdf8, explodeY: 0.35 });
+  const nmosB = addBox(stageGroup, 0.8, 0.45, 0.45, 0x2563eb, [0, 0.48, -0.4], { emissive: 0x38bdf8, explodeY: 0.1 });
+
+  const pAL = makeLabelSprite('PMOS A', 0.45); pAL.position.set(-0.9, 2.22, 0.1); stageGroup.add(pAL);
+  const pBL = makeLabelSprite('PMOS B', 0.45); pBL.position.set(0.9, 2.22, 0.1);  stageGroup.add(pBL);
+  const nAL = makeLabelSprite('NMOS A', 0.45); nAL.position.set(0.85, 1.0, 0.1);  stageGroup.add(nAL);
+  const nBL = makeLabelSprite('NMOS B', 0.45); nBL.position.set(0.85, 0.48, 0.1); stageGroup.add(nBL);
+
+  // Interconnects
+  addWire(stageGroup, [-0.9, 2.4, -0.4], [-0.9, 2.08, -0.4], 0.04, 0xef4444);
+  addWire(stageGroup, [0.9, 2.4, -0.4],  [0.9, 2.08, -0.4],  0.04, 0xef4444);
+  const wirePA = addWire(stageGroup, [-0.9, 1.62, -0.4], [0, 1.4, -0.4]);
+  const wirePB = addWire(stageGroup, [0.9, 1.62, -0.4],  [0, 1.4, -0.4]);
+  const wireN  = addWire(stageGroup, [0, 1.4, -0.4],     [0, 0.2, -0.4]);
+  const wireY  = addWire(stageGroup, [0, 1.4, -0.4],     [2.3, 1.4, -0.4], 0.06);
+
+  // Output LED dome
+  const outLed = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3, 20, 20),
+    makeMat(0x22d3ee, { emissive: 0x22d3ee, emissiveIntensity: 0.9 })
+  );
+  outLed.position.set(2.55, 1.4, -0.4);
+  stageGroup.add(outLed);
+  const yLbl = makeLabelSprite('OUT Y', 0.55); yLbl.position.set(2.55, 1.9, -0.4); stageGroup.add(yLbl);
+
+  // 3D Input switches
+  const swA = addSwitch3D(stageGroup, [-2.4, 0, 1.0], 'INPUT A', () => { state.inA ^= 1; updateSimulation(); });
+  const swB = addSwitch3D(stageGroup, [-1.2, 0, 1.0], 'INPUT B', () => { state.inB ^= 1; updateSimulation(); });
+
+  const flowHigh = spawnParticles(stageGroup, 8, [[0, 1.4, -0.4], [2.5, 1.4, -0.4]], 0x22d3ee);
+  const flowLow  = spawnParticles(stageGroup, 8, [[0, 1.4, -0.4], [0, 0.2, -0.4]], 0xf59e0b);
+
+  makeBoardDisplay(stageGroup, [0, 3.3, -1.9]);
+  refs = { pmosA, pmosB, nmosA, nmosB, wirePA, wirePB, wireN, wireY, outLed, swA, swB, flowHigh, flowLow };
+};
+
+// --- LEVEL 2: HALF ADDER ---
+const buildHalfAdder = () => {
+  // Input switches
+  const swA = addSwitch3D(stageGroup, [-2.8, 0, -0.6], 'BIT A', () => { state.inA ^= 1; updateSimulation(); });
+  const swB = addSwitch3D(stageGroup, [-2.8, 0,  0.8], 'BIT B', () => { state.inB ^= 1; updateSimulation(); });
+
+  // Gate blocks
+  const xorGate = addBox(stageGroup, 1.4, 0.7, 1.1, 0x1e293b, [0, 0.55, -0.6], { emissive: 0x38bdf8, explodeY: 0.5 });
+  const andGate = addBox(stageGroup, 1.4, 0.7, 1.1, 0x1e293b, [0, 0.55,  0.9], { emissive: 0xa855f7, explodeY: 0.25 });
+  const xL = makeLabelSprite('XOR (SUM)', 0.6);   xL.position.set(0, 1.25, -0.6); stageGroup.add(xL);
+  const aL = makeLabelSprite('AND (CARRY)', 0.6); aL.position.set(0, 1.25,  0.9); stageGroup.add(aL);
+
+  // Buses
+  const wA1 = addWire(stageGroup, [-2.4, 0.25, -0.6], [-0.7, 0.55, -0.75]);
+  const wA2 = addWire(stageGroup, [-1.5, 0.4,  -0.67], [-0.7, 0.55,  0.75]);
+  const wB1 = addWire(stageGroup, [-2.4, 0.25,  0.8], [-0.7, 0.55,  1.05]);
+  const wB2 = addWire(stageGroup, [-1.5, 0.4,   0.92], [-0.7, 0.55, -0.45]);
+  const wSum   = addWire(stageGroup, [0.7, 0.55, -0.6], [2.4, 0.55, -0.6], 0.06);
+  const wCarry = addWire(stageGroup, [0.7, 0.55,  0.9], [2.4, 0.55,  0.9], 0.06);
+
+  // Output LEDs
+  const sumLed = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 20), makeMat(0x22d3ee, { emissive: 0x22d3ee }));
+  sumLed.position.set(2.65, 0.55, -0.6); stageGroup.add(sumLed);
+  const carryLed = new THREE.Mesh(new THREE.SphereGeometry(0.32, 20, 20), makeMat(0xa855f7, { emissive: 0xa855f7 }));
+  carryLed.position.set(2.65, 0.55, 0.9); stageGroup.add(carryLed);
+
+  const sL = makeLabelSprite('SUM', 0.55);   sL.position.set(2.65, 1.15, -0.6); stageGroup.add(sL);
+  const cL = makeLabelSprite('CARRY', 0.55); cL.position.set(2.65, 1.15,  0.9); stageGroup.add(cL);
+
+  const pSum   = spawnParticles(stageGroup, 6, [[0.7, 0.55, -0.6], [2.5, 0.55, -0.6]], 0x22d3ee);
+  const pCarry = spawnParticles(stageGroup, 6, [[0.7, 0.55,  0.9], [2.5, 0.55,  0.9]], 0xc084fc);
+
+  makeBoardDisplay(stageGroup, [0, 2.55, -1.9]);
+  refs = { swA, swB, xorGate, andGate, wA1, wA2, wB1, wB2, wSum, wCarry, sumLed, carryLed, pSum, pCarry };
+};
+
+// --- LEVEL 3: 4-BIT RIPPLE-CARRY ALU ---
+const buildAlu = () => {
+  const slices = [];
+  for (let i = 0; i < 4; i++) {
+    // Bit 0 (LSB) on right (+2.4), Bit 3 (MSB) on left (-2.4)
+    const x = 2.4 - i * 1.6;
+    const swA = addSwitch3D(stageGroup, [x - 0.36, 0, 1.2], `A${i}`, () => { state.bitsA[i] ^= 1; updateSimulation(); }, 0.58);
+    const swB = addSwitch3D(stageGroup, [x + 0.36, 0, 1.2], `B${i}`, () => { state.bitsB[i] ^= 1; updateSimulation(); }, 0.58);
+
+    const faBlock = addBox(stageGroup, 1.15, 0.65, 0.9, 0x1e293b, [x, 0.45, -0.05], { emissive: 0x0ea5e9, explodeY: 0.3 + i * 0.15 });
+    const faLbl = makeLabelSprite(`FA ${i}`, 0.48); faLbl.position.set(x, 1.05, -0.05); stageGroup.add(faLbl);
+
+    const sumLed = new THREE.Mesh(new THREE.SphereGeometry(0.24, 18, 18), makeMat(0x22d3ee, { emissive: 0x22d3ee }));
+    sumLed.position.set(x, 0.5, -1.3); stageGroup.add(sumLed);
+    const sLbl = makeLabelSprite(`S${i}`, 0.42); sLbl.position.set(x, 0.95, -1.3); stageGroup.add(sLbl);
+
+    const wOut = addWire(stageGroup, [x, 0.45, -0.5], [x, 0.5, -1.1], 0.045);
+    const carryWire = i < 3
+      ? addWire(stageGroup, [x - 0.58, 0.45, -0.05], [x - 1.02, 0.45, -0.05], 0.055)
+      : addWire(stageGroup, [x - 0.58, 0.45, -0.05], [x - 1.25, 0.5, -1.3], 0.055);
+    const carryParticles = i < 3
+      ? spawnParticles(stageGroup, 4, [[x - 0.58, 0.45, -0.05], [x - 1.02, 0.45, -0.05]], 0xf59e0b)
+      : spawnParticles(stageGroup, 4, [[x - 0.58, 0.45, -0.05], [x - 1.25, 0.5, -1.3]], 0xf59e0b);
+
+    slices.push({ swA, swB, faBlock, sumLed, wOut, carryWire, carryParticles });
+  }
+
+  // Carry-out overflow LED on far left
+  const coutLed = new THREE.Mesh(new THREE.SphereGeometry(0.26, 18, 18), makeMat(0xf59e0b, { emissive: 0xf59e0b }));
+  coutLed.position.set(-3.7, 0.5, -1.3); stageGroup.add(coutLed);
+  const cLbl = makeLabelSprite('C_OUT', 0.45); cLbl.position.set(-3.7, 0.98, -1.3); stageGroup.add(cLbl);
+
+  makeBoardDisplay(stageGroup, [0, 2.5, -2.0]);
+  refs = { slices, coutLed };
+};
+
+// --- SIMULATION UPDATE ---
+const setWireActive = (wire, on, hex = 0x22d3ee) => {
+  wire.material.color.setHex(on ? hex : 0x334155);
+  wire.material.emissive.setHex(on ? hex : 0x000000);
+  wire.material.emissiveIntensity = on ? 0.85 : 0;
+};
+
+const setSwitchVisual = (sw, on) => {
+  sw.cap.position.y = on ? 0.16 : 0.22;
+  sw.cap.material.color.setHex(on ? 0x22d3ee : 0x334155);
+  sw.cap.material.emissiveIntensity = on ? 0.8 : 0;
+};
+
+const updateSimulation = () => {
+  const readout = document.getElementById('readout');
+
+  if (state.level === 0) {
+    const v = state.gateV;
+    const on = v >= 1.8;
+    const strength = Math.max(0, Math.min(1, (v - 1.5) / 3.5));
+    refs.channel.material.opacity = 0.06 + strength * 0.8;
+    refs.channel.material.emissiveIntensity = strength * 1.4;
+    refs.gate.material.emissiveIntensity = (v / 5) * 0.9;
+    setSwitchVisual(refs.vSwitch, on);
+    refs.electrons.forEach(p => { p.speed = on ? 0.4 + strength * 1.4 : 0; p.mesh.visible = on; });
+
+    readout.innerHTML =
+      `<strong>NMOS Transistor</strong><br>` +
+      `Gate Voltage: <strong>${v.toFixed(1)} V</strong> (V_th = 1.8 V)<br>` +
+      `State: <strong>${on ? 'CONDUCTING (1)' : 'CUTOFF (0)'}</strong><br>` +
+      `Positive gate voltage attracts electrons to form a conductive N-channel between Source and Drain.`;
+    drawBoardDisplay('LEVEL 1 // NMOS TRANSISTOR', `V_GATE = ${v.toFixed(1)}V  ->  ${on ? 'ON (FLOW)' : 'OFF (BLOCKED)'}`, 'Field effect creates the inversion channel at V >= 1.8V');
+  }
+
+  if (state.level === 1) {
+    const a = state.inA, b = state.inB;
+    const y = (a && b) ? 0 : 1;
+    setSwitchVisual(refs.swA, a);
+    setSwitchVisual(refs.swB, b);
+
+    const pAOn = !a, pBOn = !b, nAOn = !!a, nBOn = !!b;
+    refs.pmosA.material.emissiveIntensity = pAOn ? 0.9 : 0;
+    refs.pmosB.material.emissiveIntensity = pBOn ? 0.9 : 0;
+    refs.nmosA.material.emissiveIntensity = nAOn ? 0.9 : 0;
+    refs.nmosB.material.emissiveIntensity = nBOn ? 0.9 : 0;
+
+    setWireActive(refs.wirePA, pAOn, 0x22d3ee);
+    setWireActive(refs.wirePB, pBOn, 0x22d3ee);
+    setWireActive(refs.wireN,  !y,   0xf59e0b);
+    setWireActive(refs.wireY,  !!y,  0x22d3ee);
+
+    refs.outLed.material.color.setHex(y ? 0x22d3ee : 0x1e293b);
+    refs.outLed.material.emissiveIntensity = y ? 1.2 : 0;
+    refs.flowHigh.forEach(p => { p.speed = y ? 1.0 : 0; p.mesh.visible = !!y; });
+    refs.flowLow.forEach(p => { p.speed = !y ? 1.0 : 0; p.mesh.visible = !y; });
+
+    readout.innerHTML =
+      `<strong>CMOS NAND Gate (Universal)</strong><br>` +
+      `A = <strong>${a}</strong>, B = <strong>${b}</strong> → Output Y = <strong>${y}</strong><br>` +
+      `Pull-Up (PMOS): ${pAOn || pBOn ? 'CLOSED to VDD' : 'OPEN'} · Pull-Down (NMOS): ${nAOn && nBOn ? 'CLOSED to GND' : 'OPEN'}`;
+    drawBoardDisplay('LEVEL 2 // CMOS NAND GATE', `A=${a}  B=${b}   =>   Y = ${y}`, '2 PMOS (parallel) + 2 NMOS (series) = Universal Gate');
+  }
+
+  if (state.level === 2) {
+    const a = state.inA, b = state.inB;
+    const sum = a ^ b;
+    const carry = a & b;
+    setSwitchVisual(refs.swA, a);
+    setSwitchVisual(refs.swB, b);
+
+    setWireActive(refs.wA1, a); setWireActive(refs.wA2, a);
+    setWireActive(refs.wB1, b); setWireActive(refs.wB2, b);
+    setWireActive(refs.wSum, sum, 0x22d3ee);
+    setWireActive(refs.wCarry, carry, 0xc084fc);
+
+    refs.xorGate.material.emissiveIntensity = sum ? 0.65 : 0.08;
+    refs.andGate.material.emissiveIntensity = carry ? 0.65 : 0.08;
+    refs.sumLed.material.color.setHex(sum ? 0x22d3ee : 0x1e293b);
+    refs.sumLed.material.emissiveIntensity = sum ? 1.2 : 0;
+    refs.carryLed.material.color.setHex(carry ? 0xc084fc : 0x1e293b);
+    refs.carryLed.material.emissiveIntensity = carry ? 1.2 : 0;
+
+    refs.pSum.forEach(p => { p.speed = sum ? 1.1 : 0; p.mesh.visible = !!sum; });
+    refs.pCarry.forEach(p => { p.speed = carry ? 1.1 : 0; p.mesh.visible = !!carry; });
+
+    readout.innerHTML =
+      `<strong>Half Adder (Gates → Math)</strong><br>` +
+      `Binary: <strong>${a} + ${b} = ${carry}${sum}₂</strong> (Decimal ${a + b})<br>` +
+      `XOR produces <strong>SUM (${sum})</strong>; AND produces <strong>CARRY (${carry})</strong>.`;
+    drawBoardDisplay('LEVEL 3 // HALF ADDER', `${a} + ${b}  =  CARRY:${carry}  SUM:${sum}  (Dec ${a + b})`, 'Combining XOR + AND turns pure logic into binary addition');
+  }
+
+  if (state.level === 3) {
+    let cin = 0;
+    const sums = [];
+    for (let i = 0; i < 4; i++) {
+      const a = state.bitsA[i], b = state.bitsB[i];
+      const s = a ^ b ^ cin;
+      const cout = (a & b) | (cin & (a ^ b));
+      sums.push(s);
+
+      const sl = refs.slices[i];
+      setSwitchVisual(sl.swA, a);
+      setSwitchVisual(sl.swB, b);
+      sl.faBlock.material.emissiveIntensity = (s || cout) ? 0.45 : 0.05;
+      sl.sumLed.material.color.setHex(s ? 0x22d3ee : 0x1e293b);
+      sl.sumLed.material.emissiveIntensity = s ? 1.2 : 0;
+      setWireActive(sl.wOut, s, 0x22d3ee);
+      setWireActive(sl.carryWire, cout, 0xf59e0b);
+      sl.carryParticles.forEach(p => { p.speed = cout ? 1.4 : 0; p.mesh.visible = !!cout; });
+      cin = cout;
+    }
+
+    refs.coutLed.material.color.setHex(cin ? 0xf59e0b : 0x1e293b);
+    refs.coutLed.material.emissiveIntensity = cin ? 1.3 : 0;
+
+    const decA = state.bitsA.reduce((acc, bit, i) => acc + (bit << i), 0);
+    const decB = state.bitsB.reduce((acc, bit, i) => acc + (bit << i), 0);
+    const binA = [...state.bitsA].reverse().join('');
+    const binB = [...state.bitsB].reverse().join('');
+    const binOut = `${cin}${[...sums].reverse().join('')}`;
+
+    readout.innerHTML =
+      `<strong>4-Bit Ripple-Carry Adder (ALU Core)</strong><br>` +
+      `A: <strong>${binA}₂</strong> (${decA}) + B: <strong>${binB}₂</strong> (${decB})<br>` +
+      `Result: <strong>${binOut}₂</strong> (<strong>${decA + decB}</strong>) · Amber = Carry Ripple`;
+    drawBoardDisplay('LEVEL 4 // 4-BIT RIPPLE-CARRY ALU', `${decA} (${binA}) + ${decB} (${binB}) = ${decA + decB} (${binOut})`, 'Four chained Full Adders propagate carry bits right-to-left');
+  }
+
+  renderDynamicHud();
+};
+
+// --- HUD CONTROLS ---
+const renderDynamicHud = () => {
+  const el = document.getElementById('dynamic-controls');
+  if (state.level === 0) {
+    el.innerHTML = `
+      <div class="row">
+        <label><span>Gate Voltage (V_gs)</span><span>${state.gateV.toFixed(1)} V</span></label>
+        <input id="gate-v-slider" type="range" min="0" max="5" step="0.1" value="${state.gateV}" />
+      </div>`;
+    document.getElementById('gate-v-slider').addEventListener('input', (e) => {
+      state.gateV = parseFloat(e.target.value);
+      updateSimulation();
+    });
+  } else if (state.level === 1 || state.level === 2) {
+    el.innerHTML = `
+      <div class="controls-grid">
+        <button class="bit-btn ${state.inA ? 'on' : ''}" id="btn-a">Input A: ${state.inA}</button>
+        <button class="bit-btn ${state.inB ? 'on' : ''}" id="btn-b">Input B: ${state.inB}</button>
+      </div>`;
+    document.getElementById('btn-a').onclick = () => { state.inA ^= 1; updateSimulation(); };
+    document.getElementById('btn-b').onclick = () => { state.inB ^= 1; updateSimulation(); };
+  } else {
+    const rowHtml = (name, arr) =>
+      `<div class="controls-grid">` +
+      [3, 2, 1, 0].map(i =>
+        `<button class="bit-btn ${arr[i] ? 'on' : ''}" data-reg="${name}" data-bit="${i}">${name}${i}:${arr[i]}</button>`
+      ).join('') + `</div>`;
+    el.innerHTML = rowHtml('A', state.bitsA) + rowHtml('B', state.bitsB);
+    el.querySelectorAll('button').forEach(btn => {
+      btn.onclick = () => {
+        const i = parseInt(btn.dataset.bit, 10);
+        if (btn.dataset.reg === 'A') state.bitsA[i] ^= 1;
+        else state.bitsB[i] ^= 1;
+        updateSimulation();
+      };
+    });
+  }
+};
+
+// --- STAGE REBUILD ---
+const setLevel = (lvl) => {
+  state.level = lvl;
+  document.querySelectorAll('#level-tabs button').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.level, 10) === lvl);
+  });
+
+  // Clear previous stage
+  while (stageGroup.children.length) stageGroup.remove(stageGroup.children[0]);
+  clickables = [...vrTabCaps];
+  explodeItems = [];
+  particles = [];
+  refs = {};
+
+  if (lvl === 0) buildTransistor();
+  if (lvl === 1) buildNand();
+  if (lvl === 2) buildHalfAdder();
+  if (lvl === 3) buildAlu();
+
+  syncVrTabColors();
+  updateSimulation();
+};
+
+// --- DESKTOP CLICK RAYCASTING ---
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (state.inVR) return;
+  pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(clickables, false);
+  if (hits.length && hits[0].object.userData.onToggle) {
+    hits[0].object.userData.onToggle();
+  }
+});
+
+// --- WEBXR CONTROLLERS & TABLETOP SCALING ---
+const tempMatrix = new THREE.Matrix4();
+const setupVrController = (index) => {
+  const ctrl = renderer.xr.getController(index);
+  const laser = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -4)]),
+    new THREE.LineBasicMaterial({ color: 0x38bdf8 })
+  );
+  ctrl.add(laser);
+
+  ctrl.addEventListener('selectstart', () => {
+    tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+    raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+    raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+    const hits = raycaster.intersectObjects(clickables, false);
+    if (hits.length && hits[0].object.userData.onToggle) {
+      hits[0].object.userData.onToggle();
+    }
+  });
+  scene.add(ctrl);
+};
+setupVrController(0);
+setupVrController(1);
+
+renderer.xr.addEventListener('sessionstart', () => {
+  state.inVR = true;
+  document.getElementById('hud').style.display = 'none';
+  rigGroup.position.set(0, 0.95, -1.15);
+  rigGroup.scale.setScalar(0.32);
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+  state.inVR = false;
+  document.getElementById('hud').style.display = 'block';
+  rigGroup.position.set(0, 0, 0);
+  rigGroup.scale.setScalar(1);
+});
+
+// --- EVENT WIRING ---
+document.querySelectorAll('#level-tabs button').forEach(btn => {
+  btn.onclick = () => setLevel(parseInt(btn.dataset.level, 10));
+});
+
+document.getElementById('explode-slider').addEventListener('input', (e) => {
+  state.explode = parseFloat(e.target.value);
+  document.getElementById('explode-val').textContent = `${Math.round(state.explode * 100)}%`;
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// --- ANIMATION LOOP (REQUIRED FOR WEBXR) ---
+let lastTime = performance.now();
+const pA = new THREE.Vector3();
+const pB = new THREE.Vector3();
+
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  // Smooth exploded-view interpolation
+  for (const item of explodeItems) {
+    const targetY = item.baseY + item.offsetY * state.explode;
+    item.obj.position.y += (targetY - item.obj.position.y) * 0.14;
+  }
+
+  // Animate electrons / signal pulses
+  for (const p of particles) {
+    if (p.speed > 0) {
+      p.t = (p.t + dt * p.speed) % 1;
+      pA.set(...p.path[0]);
+      pB.set(...p.path[1]);
+      p.mesh.position.lerpVectors(pA, pB, p.t);
+    }
+  }
+
+  if (!state.inVR) controls.update();
+  renderer.render(scene, camera);
+});
+
+// --- BOOT ---
+buildVrTabs();
+setLevel(0);
+</script>
+</body>
+</html>
